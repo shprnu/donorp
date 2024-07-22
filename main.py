@@ -3,6 +3,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import seaborn as sns
 import datetime
+import numpy as np
 
 matplotlib.use('TkAgg')
 
@@ -106,7 +107,6 @@ donors_data['Регион'] = donors_data.apply(lambda rw: fill_region(rw), axis
 
 # Анализ распределения по регионам
 plt.figure(figsize=(12, 8))
-ss = donors_data['Регион'].value_counts().sort_values()
 top_regions = donors_data['Регион'].value_counts().head(10).index
 sns.countplot(y='Регион', data=donors_data[donors_data['Регион'].isin(top_regions)],
               order=donors_data['Регион'].value_counts(ascending=False).head(10).index)
@@ -114,4 +114,137 @@ plt.title('Топ 10 регионов по количеству доноров')
 plt.show()
 
 # АНАЛИЗ ПОЖЕРТВОВАНИЙ
+# Объединение данных пользователей и данных о пожертвованиях по идентификатору пользователя
+clients_anon['ID пользователя'] = pd.to_numeric(clients_anon['ID пользователя'], errors='coerce')
+
+donors_clients_data = pd.merge(clients_anon, fundraisings_anon, left_on='ID пользователя',
+                               right_on='ID пользователя', how='inner')
+
+
+# Анализ распределения по возрасту
+def get_age_2(x):
+    if x == 'Не указано':
+        return None
+    else:
+        age = datetime.date.today().year - datetime.date(int(x[0:4]), int(x[5:7]), int(x[8:10])).year
+        # убираем аномальный возраст
+        age = age if (18 <= age <= 99) else None
+        return age
+
+
+donors_clients_data['Возраст'] = donors_clients_data['Дата рождения'].apply(lambda x: get_age_2(x))
+
+plt.figure(figsize=(10, 6))
+sns.histplot(donors_clients_data['Возраст'].dropna(), bins=5)
+plt.title('Распределение жертвователей по возрасту')
+plt.show()
+
+# Анализ распределения по суммам
+top_clients = donors_clients_data.groupby('ID пользователя')['Собрано'].sum().sort_values(ascending=False)
+palette_color = sns.color_palette('bright')
+l_data = top_clients.tolist()[0:5]
+l_data.append(sum(top_clients.tolist()[5:]))
+l_label = list(map(str, list(map(int, top_clients.index.values.tolist()[0:5]))))
+l_label.append('Other')
+plt.pie(l_data, labels=l_label, colors=palette_color, autopct='%.0f%%')
+plt.title('Распределение жертвователей по сумме пожертвований')
+plt.show()
+
+
+# МЕТРИКИ РЕЗУЛЬТАТОВ ДЕЯТЕЛЬНОСТИ DONORSEARCH
+# Преобразование дат в datetime
+def convert_dt(x):
+    return datetime.datetime.strptime(x, '%d.%m.%Y').strftime('%m.%d.%Y')
+
+
+donations_anon['Дата донации'] = donations_anon['Дата донации'].apply(lambda x: convert_dt(x))
+donations_anon['Дата донации'] = pd.to_datetime(donations_anon['Дата донации'])
+# Убираем аномальные даты
+donations_anon = donations_anon[donations_anon['Дата донации'] <= pd.Timestamp.today()]
+
+fundraisings_anon['Дата начала сбора'] = fundraisings_anon['Дата начала сбора'].apply(lambda x: convert_dt(x))
+fundraisings_anon['Дата начала сбора'] = pd.to_datetime(fundraisings_anon['Дата начала сбора'])
+# Убираем аномальные даты
+fundraisings_anon = fundraisings_anon[fundraisings_anon['Дата начала сбора'] <= pd.Timestamp.today()]
+
+# DAU и MAU
+# Расчет DAU
+donations_anon['date'] = donations_anon['Дата донации'].dt.date
+fundraisings_anon['date'] = fundraisings_anon['Дата начала сбора'].dt.date
+
+dau_donations = donations_anon.groupby('date').size().reset_index(name='DAU')
+dau_fundraisings = fundraisings_anon.groupby('date').size().reset_index(name='DAU')
+
+# Расчет MAU
+donations_anon['month'] = donations_anon['Дата донации'].dt.to_period('M')
+fundraisings_anon['month'] = fundraisings_anon['Дата начала сбора'].dt.to_period('M')
+
+mau_donations = donations_anon.groupby('month').size().reset_index(name='MAU')
+mau_fundraisings = fundraisings_anon.groupby('month').size().reset_index(name='MAU')
+
+print("DAU Donations", dau_donations)
+print("DAU Fundraisings", dau_fundraisings)
+print("MAU Donations", mau_donations)
+print("MAU Fundraisings", mau_fundraisings)
+
+# Расчет количества донаций на одного пользователя
+avg_donation_amount = donations_anon.groupby('ID пользователя')['ID'].count() \
+    .reset_index(name='avg_donation_amount')
+# Расчет средней суммы пожертвований на одного пользователя
+avg_fundraising_amount = fundraisings_anon.groupby('ID пользователя')['Собрано'].mean()\
+    .reset_index(name='avg_fundraising_amount')
+
+# Расчет средней продолжительности жизни пользователя на платформе (в днях)
+donations_anon['user_lifetime'] = (donations_anon['Дата донации'].max() - donations_anon['Дата донации'].min())
+fundraisings_anon['user_lifetime'] = (fundraisings_anon['Дата начала сбора'].max() -
+                                      fundraisings_anon['Дата начала сбора'].min())
+
+avg_user_lifetime_donations = donations_anon.groupby('ID пользователя')['user_lifetime'].mean()\
+    .reset_index(name='avg_user_lifetime')
+avg_user_lifetime_fundraisings = fundraisings_anon.groupby('ID пользователя')['user_lifetime'].mean()\
+    .reset_index(name='avg_user_lifetime')
+
+# LTV
+# Расчет LTV
+ltv_donations = pd.merge(avg_donation_amount, avg_user_lifetime_donations, on='ID пользователя')
+ltv_donations['LTV'] = ltv_donations['avg_donation_amount'] * ltv_donations['avg_user_lifetime']
+
+ltv_fundraisings = pd.merge(avg_fundraising_amount, avg_user_lifetime_fundraisings, on='ID пользователя')
+ltv_fundraisings['LTV'] = ltv_fundraisings['avg_fundraising_amount'] * ltv_fundraisings['avg_user_lifetime']
+
+print("LTV Donations", ltv_donations)
+print("LTV Fundraisings", ltv_fundraisings)
+
+# RETENTION RATE
+# Расчет коэффициента удержания пользователей
+def calculate_retention_rate(df, date_column):
+    df['registration_month'] = df[date_column].dt.to_period('M')
+    cohort_sizes = df.groupby('registration_month').size()
+    retention_data = df.groupby(['registration_month', df[date_column].dt.to_period('M')]).size().unstack(fill_value=0)
+    retention_rate = retention_data.divide(cohort_sizes, axis=0)
+    return retention_rate
+
+
+retention_donations = calculate_retention_rate(donations_anon, 'Дата донации')
+retention_fundraisings = calculate_retention_rate(fundraisings_anon, 'Дата начала сбора')
+
+print("Retention Rate Donations", retention_donations)
+print("Retention Rate Fundraisings", retention_fundraisings)
+
+# DONATION FREQUENCY И DONATION AMOUNT GROWTH
+# Частота донаций (в среднем на одного пользователя)
+donation_frequency = donations_anon.groupby('ID пользователя').size().mean()
+fundraising_frequency = fundraisings_anon.groupby('ID пользователя').size().mean()
+
+# Рост суммы пожертвований с течением времени
+donations_anon['year_month'] = donations_anon['Дата донации'].dt.to_period('M')
+fundraisings_anon['year_month'] = fundraisings_anon['Дата начала сбора'].dt.to_period('M')
+
+donation_amount_growth = donations_anon.groupby('year_month')['ID'].count().pct_change().fillna(0)\
+    .reset_index(name='Donation Amount Growth')
+fundraising_amount_growth = fundraisings_anon.groupby('year_month')['Собрано'].sum().pct_change().fillna(0)\
+    .reset_index(name='Fundraising Amount Growth')
+
+print("Donation Amount Growth", donation_amount_growth)
+print("Fundraising Amount Growth", fundraising_amount_growth)
 
